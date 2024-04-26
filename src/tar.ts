@@ -5,8 +5,6 @@ import {join} from 'node:path'
 
 import {touch} from './util.js'
 const debug = makeDebug('oclif-update')
-import crypto from 'node:crypto'
-import zlib from 'node:zlib'
 import {Headers, extract as tarExtract} from 'tar-fs'
 
 const ignore = (_name: string, header?: Headers) => {
@@ -27,31 +25,15 @@ const ignore = (_name: string, header?: Headers) => {
   }
 }
 
-async function extract(stream: NodeJS.ReadableStream, basename: string, output: string, sha?: string): Promise<void> {
+async function extract(stream: NodeJS.ReadableStream, basename: string, output: string): Promise<void> {
   const getTmp = () => `${output}.partial.${Math.random().toString().split('.')[1].slice(0, 5)}`
   let tmp = getTmp()
   if (existsSync(tmp)) tmp = getTmp()
   debug(`extracting to ${tmp}`)
   try {
     await new Promise((resolve, reject) => {
-      let shaValidated = false
       let extracted = false
-      const check = () => shaValidated && extracted && resolve(null)
-
-      if (sha) {
-        const hasher = crypto.createHash('sha256')
-        stream.on('error', reject)
-        stream.on('data', (d) => hasher.update(d))
-        stream.on('end', () => {
-          const shasum = hasher.digest('hex')
-          if (sha === shasum) {
-            shaValidated = true
-            check()
-          } else {
-            reject(new Error(`SHA mismatch: expected ${shasum} to be ${sha}`))
-          }
-        })
-      } else shaValidated = true
+      const check = () => extracted && resolve(null)
 
       const extract = tarExtract(tmp, {ignore})
       extract.on('error', reject)
@@ -60,10 +42,7 @@ async function extract(stream: NodeJS.ReadableStream, basename: string, output: 
         check()
       })
 
-      const gunzip = zlib.createGunzip()
-      gunzip.on('error', reject)
-
-      stream.pipe(gunzip).pipe(extract)
+      stream.pipe(extract)
     })
 
     if (existsSync(output)) {
@@ -78,6 +57,7 @@ async function extract(stream: NodeJS.ReadableStream, basename: string, output: 
     }
 
     const from = join(tmp, basename)
+
     debug('moving %s to %s', from, output)
     await rename(from, output)
     await rm(tmp, {force: true, recursive: true}).catch(debug)
