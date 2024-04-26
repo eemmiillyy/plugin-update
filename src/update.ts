@@ -1,4 +1,4 @@
-import {Config, Interfaces, ux} from '@oclif/core'
+import {Config, ux} from '@oclif/core'
 import chalk from 'chalk'
 import fileSize from 'filesize'
 import {HTTP} from 'http-call'
@@ -34,12 +34,28 @@ export class Updater {
   }
 
   public async fetchVersionIndex(): Promise<VersionIndex> {
-    // TODO get versions from npm to support -a
-    ux.action.status = 'fetching version index'
-    const newIndexUrl = this.config.s3Url(s3VersionIndexKey(this.config))
+    // TODO should this be github or npm?
+    const newIndexUrl = 'https://api.github.com/repos/xataio/client-ts/releases'
     try {
-      const {body} = await HTTP.get<VersionIndex>(newIndexUrl)
-      return typeof body === 'string' ? JSON.parse(body) : body
+      const {body} = await HTTP.get<{tag_name: string}[]>(newIndexUrl)
+      // eslint-disable-next-line unicorn/no-array-reduce
+      const newbody = body.reduce(
+        (acc, release) => {
+          const version = release.tag_name
+          if (version.includes('@xata.io/cli@')) {
+            // TODO find platform specific binary
+            // const asset = release.assets.find((a) => a.name.includes("arm"));
+            // TODO put the download link here, as .tar?
+            const versionOnly = version.replace('@xata.io/cli@', '')
+            acc[versionOnly] = `LINK_TO_DOWNLOAD_BINARY`
+            return acc
+          }
+
+          return acc
+        },
+        {} as {[key: string]: string},
+      )
+      return newbody
     } catch {
       throw new Error(`No version indices exist for ${this.config.name}.`)
     }
@@ -270,20 +286,8 @@ const notUpdatable = (config: Config): boolean => {
   return false
 }
 
-const composeS3SubDir = (config: Config): string => {
-  let s3SubDir = config.pjson.oclif.update.s3.folder || ''
-  if (s3SubDir !== '' && s3SubDir.slice(-1) !== '/') s3SubDir = `${s3SubDir}/`
-  return s3SubDir
-}
-
-const s3VersionIndexKey = (config: Config): string => {
-  const {arch, bin} = config
-  const s3SubDir = composeS3SubDir(config)
-  return join(s3SubDir, 'versions', `${bin}-${determinePlatform(config)}-${arch}-tar-gz.json`)
-}
-
-const determinePlatform = (config: Config): Interfaces.PlatformTypes =>
-  config.platform === 'wsl' ? 'linux' : config.platform
+// const determinePlatform = (config: Config): Interfaces.PlatformTypes =>
+//   config.platform === 'wsl' ? 'linux' : config.platform
 
 // when autoupdating, wait until the CLI isn't active
 const debounce = async (cacheDir: string): Promise<void> => {
