@@ -41,19 +41,7 @@
     "dirname": "oclif-example-s3-cli",
     "update": {
       "s3": {
-        "bucket": "oclif-staging",
-        "templates": {
-          "target": {
-            "unversioned": "tarballs/<%- bin %>/<%- channel === 'stable' ? '' : 'channels/' + channel + '/' %><%- bin %>-<%- platform %>-<%- arch %><%- ext %>",
-            "versioned": "tarballs/<%- bin %>/<%- channel === 'stable' ? '' : 'channels/' + channel + '/' %><%- bin %>-v<%- version %>/<%- bin %>-v<%- version %>-<%- platform %>-<%- arch %><%- ext %>",
-            "manifest": "tarballs/<%- bin %>/<%- channel === 'stable' ? '' : 'channels/' + channel + '/' %><%- platform %>-<%- arch %>"
-          },
-          "vanilla": {
-            "unversioned": "tarballs/<%- bin %>/<%- channel === 'stable' ? '' : 'channels/' + channel + '/' %><%- bin %><%- ext %>",
-            "versioned": "tarballs/<%- bin %>/<%- channel === 'stable' ? '' : 'channels/' + channel + '/' %><%- bin %>-v<%- version %>/<%- bin %>-v<%- version %><%- ext %>",
-            "manifest": "tarballs/<%- bin %>/<%- channel === 'stable' ? '' : 'channels/' + channel + '/' %>version"
-          }
-        }
+        "host": "github.com"
       },
       "node": {
         "version": "10.4.0",

@@ -34,6 +34,7 @@ export class Updater {
   }
 
   public async fetchVersionIndex(): Promise<VersionIndex> {
+    // TODO get versions from npm to support -a
     ux.action.status = 'fetching version index'
     const newIndexUrl = this.config.s3Url(s3VersionIndexKey(this.config))
     try {
@@ -87,9 +88,7 @@ export class Updater {
           throw new Error(`${version} not found in index:\n${Object.keys(index).join(', ')}`)
         }
 
-        const manifest = await this.fetchVersionManifest(version, url)
-        const updated = manifest.sha ? `${manifest.version}-${manifest.sha}` : manifest.version
-        await this.update(manifest, current, updated, force, channel)
+        await this.update(current, version, force, channel)
       }
 
       await this.config.runHook('update', {channel, version})
@@ -99,14 +98,17 @@ export class Updater {
         `Updating to a specific version will not update the channel. If autoupdate is enabled, the CLI will eventually be updated back to ${channel}.`,
       )
     } else {
-      const manifest = await fetchChannelManifest(channel, this.config)
-      const updated = manifest.sha ? `${manifest.version}-${manifest.sha}` : manifest.version
+      const {
+        body: {version: latestVersion},
+      } = await HTTP.get<{version: string}>('https://registry.npmjs.org/@xata.io/cli/latest')
+
+      const updated = latestVersion
 
       if (!force && alreadyOnVersion(current, updated)) {
         ux.action.stop(this.config.scopedEnvVar('HIDE_UPDATED_MESSAGE') ? 'done' : `already on version ${current}`)
       } else {
         await this.config.runHook('preupdate', {channel, version: updated})
-        await this.update(manifest, current, updated, force, channel)
+        await this.update(current, updated, force, channel)
       }
 
       await this.config.runHook('update', {channel, version: updated})
@@ -159,14 +161,6 @@ ${binPathEnvVar}="\$DIR/${bin}" ${redirectedEnvVar}=1 "$DIR/../${version}/bin/${
     }
   }
 
-  private async fetchVersionManifest(version: string, url: string): Promise<Interfaces.S3Manifest> {
-    const parts = url.split('/')
-    const hashIndex = parts.indexOf(version) + 1
-    const hash = parts[hashIndex]
-    const s3Key = s3VersionManifestKey({config: this.config, hash, version})
-    return fetchManifest(s3Key, this.config)
-  }
-
   private async findLocalVersion(version: string): Promise<string | undefined> {
     const versions = await this.findLocalVersions()
     return versions.map((file) => basename(file)).find((file) => file.startsWith(version))
@@ -215,14 +209,7 @@ ${binPathEnvVar}="\$DIR/${bin}" ${redirectedEnvVar}=1 "$DIR/../${version}/bin/${
     }
   }
 
-  // eslint-disable-next-line max-params
-  private async update(
-    manifest: Interfaces.S3Manifest,
-    current: string,
-    updated: string,
-    force: boolean,
-    channel: string,
-  ) {
+  private async update(current: string, updated: string, force: boolean, channel: string) {
     ux.action.start(
       `${this.config.name}: Updating CLI from ${chalk.green(current)} to ${chalk.green(updated)}${
         channel === 'stable' ? '' : ' (' + chalk.yellow(channel) + ')'
@@ -231,8 +218,7 @@ ${binPathEnvVar}="\$DIR/${bin}" ${redirectedEnvVar}=1 "$DIR/../${version}/bin/${
 
     await ensureClientDir(this.clientRoot)
     const output = join(this.clientRoot, updated)
-
-    if (force || !existsSync(output)) await downloadAndExtract(output, manifest, channel, this.config)
+    if (force || !existsSync(output)) await downloadAndExtract(output, '', channel, this.config)
 
     await this.refreshConfig(updated)
     await setChannel(channel, this.config.dataDir)
@@ -290,18 +276,6 @@ const composeS3SubDir = (config: Config): string => {
   return s3SubDir
 }
 
-const fetchManifest = async (s3Key: string, config: Config): Promise<Interfaces.S3Manifest> => {
-  ux.action.status = 'fetching manifest'
-
-  const url = config.s3Url(s3Key)
-  const {body} = await HTTP.get<Interfaces.S3Manifest | string>(url)
-  if (typeof body === 'string') {
-    return JSON.parse(body)
-  }
-
-  return body
-}
-
 const s3VersionIndexKey = (config: Config): string => {
   const {arch, bin} = config
   const s3SubDir = composeS3SubDir(config)
@@ -310,24 +284,6 @@ const s3VersionIndexKey = (config: Config): string => {
 
 const determinePlatform = (config: Config): Interfaces.PlatformTypes =>
   config.platform === 'wsl' ? 'linux' : config.platform
-
-const s3ChannelManifestKey = (channel: string, config: Config): string => {
-  const {arch, bin} = config
-  const s3SubDir = composeS3SubDir(config)
-  return join(s3SubDir, 'channels', channel, `${bin}-${determinePlatform(config)}-${arch}-buildmanifest`)
-}
-
-const s3VersionManifestKey = ({config, hash, version}: {config: Config; hash: string; version: string}): string => {
-  const {arch, bin} = config
-  const s3SubDir = composeS3SubDir(config)
-  return join(
-    s3SubDir,
-    'versions',
-    version,
-    hash,
-    `${bin}-v${version}-${hash}-${determinePlatform(config)}-${arch}-buildmanifest`,
-  )
-}
 
 // when autoupdating, wait until the CLI isn't active
 const debounce = async (cacheDir: string): Promise<void> => {
@@ -354,69 +310,38 @@ const debounce = async (cacheDir: string): Promise<void> => {
 const setChannel = async (channel: string, dataDir: string): Promise<void> =>
   writeFile(join(dataDir, 'channel'), channel, 'utf8')
 
-const fetchChannelManifest = async (channel: string, config: Config): Promise<Interfaces.S3Manifest> => {
-  const s3Key = s3ChannelManifestKey(channel, config)
+const downloadAndExtract = async (output: string, baseDir: string, channel: string, config: Config): Promise<void> => {
+  console.log('downlaoding......', output, baseDir, channel, config.version)
   try {
-    return await fetchManifest(s3Key, config)
-  } catch (error: unknown) {
-    const {statusCode} = error as {statusCode: number}
-    if (statusCode === 403) throw new Error(`HTTP 403: Invalid channel ${channel}`)
-    throw error
+    // TODO should be from github
+    // TODO expects a .tar file
+    const {response: stream} = await HTTP.stream('https://www.dwsamplefiles.com/?dl_id=553', {})
+    stream.pause()
+
+    const extraction = Extractor.extract(stream, baseDir, output)
+
+    if (ux.action.type === 'spinner') {
+      // No content-length on chunked responses
+      const total = Number.parseInt(stream.headers['content-length'] ?? '0', 10)
+      let current = 0
+      const updateStatus = throttle(
+        (newStatus: string) => {
+          ux.action.status = newStatus
+        },
+        250,
+        {leading: true, trailing: false},
+      )
+      stream.on('data', (data) => {
+        current += data.length
+        updateStatus(`${filesize(current)}/${filesize(total)}`)
+      })
+    }
+
+    stream.resume()
+    await extraction
+  } catch {
+    throw new Error('unabel to extract')
   }
-}
-
-const downloadAndExtract = async (
-  output: string,
-  manifest: Interfaces.S3Manifest,
-  channel: string,
-  config: Config,
-): Promise<void> => {
-  const {gz, sha256gz, version} = manifest
-
-  const gzUrl =
-    gz ??
-    config.s3Url(
-      config.s3Key('versioned', {
-        arch: config.arch,
-        bin: config.bin,
-        channel,
-        ext: 'gz',
-        platform: determinePlatform(config),
-        version,
-      }),
-    )
-  const {response: stream} = await HTTP.stream(gzUrl)
-  stream.pause()
-
-  const baseDir =
-    manifest.baseDir ??
-    config.s3Key('baseDir', {
-      arch: config.arch,
-      bin: config.bin,
-      channel,
-      platform: determinePlatform(config),
-      version,
-    })
-  const extraction = Extractor.extract(stream, baseDir, output, sha256gz)
-
-  if (ux.action.type === 'spinner') {
-    const total = Number.parseInt(stream.headers['content-length']!, 10)
-    let current = 0
-    const updateStatus = throttle(
-      (newStatus: string) => {
-        ux.action.status = newStatus
-      },
-      250,
-      {leading: true, trailing: false},
-    )
-    stream.on('data', (data) => {
-      current += data.length
-      updateStatus(`${filesize(current)}/${filesize(total)}`)
-    })
-  }
-
-  stream.resume()
-  await extraction
 }
 
 const determineChannel = async ({config, version}: {config: Config; version?: string}): Promise<string> => {
